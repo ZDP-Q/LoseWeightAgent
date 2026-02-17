@@ -37,7 +37,7 @@ class LoseWeightAgent:
         self.food_analyzer = FoodAnalyzer(
             self.client,
             self.prompt_manager,
-            model="qwen-vl-plus",  # 显式指定视觉模型
+            model="qwen3.5-plus",  # 统一使用 qwen3.5-plus
             stream=self.stream,
         )
 

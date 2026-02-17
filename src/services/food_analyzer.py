@@ -11,7 +11,7 @@ class FoodAnalyzer:
         self,
         client: AsyncOpenAI,
         prompt_manager: PromptManager,
-        model: str = "qwen-vl-plus",  # 视觉模型通常需要 VL 系列
+        model: str = "qwen3.5-plus",
         stream: bool = False,
     ):
         self.client = client
