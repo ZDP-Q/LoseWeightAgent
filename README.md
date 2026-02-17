@@ -13,7 +13,7 @@ LoseWeightAgent 是一款基于大语言模型的健康管理助手，旨在通�
 
 - **语言**：Python 3.12+
 - **包管理**：[uv](https://github.com/astral-sh/uv)
-- **大模型**：通义千问 (Qwen3.5-Plus, Qwen-VL-Plus)
+- **大模型**：通义千问 (qwen3.5-plus, qwen-vl-plus)
 - **数据库**：PostgreSQL / SQLite (SQLAlchemy)
 - **规范化**：Pydantic V2 (支持 Alias 映射)
 
