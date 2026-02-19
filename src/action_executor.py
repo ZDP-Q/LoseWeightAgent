@@ -1,13 +1,11 @@
 """Agent 动作执行器。
 
-解析 LLM 输出中的 JSON Action 指令并执行对应的数据库操作。
+执行来自 LLM Tool Calling 的指令并执行对应的数据库操作。
 """
 
-import json
 import logging
-import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from sqlmodel import select
 
@@ -15,7 +13,7 @@ logger = logging.getLogger("loseweight.agent.action")
 
 
 class ActionExecutor:
-    """解析并执行 Agent 输出的 JSON Action 指令。"""
+    """执行 Agent 输出的工具调用指令。"""
 
     def __init__(self, session_factory):
         """初始化。
@@ -42,7 +40,7 @@ class ActionExecutor:
         from src.models import WeightRecord
 
         weight_kg = params.get("weight_kg")
-        if not weight_kg:
+        if weight_kg is None:
             return {"success": False, "error": "缺少 weight_kg 参数"}
 
         notes = params.get("notes", "")
@@ -65,7 +63,7 @@ class ActionExecutor:
                     "recorded_at": record.recorded_at.isoformat(),
                     "notes": record.notes,
                 },
-                "message": f"已记录体重 {record.weight_kg} kg",
+                "message": f"已成功记录体重 {record.weight_kg} kg",
             }
 
     def _action_query_weight_history(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -95,7 +93,7 @@ class ActionExecutor:
             return {
                 "success": True,
                 "data": data,
-                "message": f"查询到 {len(data)} 条体重记录",
+                "message": f"为您查询到最近 {len(data)} 条体重记录",
             }
 
     def _action_calculate_tdee(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -119,7 +117,7 @@ class ActionExecutor:
         weight = float(params["weight_kg"])
         height = float(params["height_cm"])
         age = int(params["age"])
-        if params["gender"].lower() == "male":
+        if str(params["gender"]).lower() == "male":
             bmr = 10 * weight + 6.25 * height - 5 * age + 5
         else:
             bmr = 10 * weight + 6.25 * height - 5 * age - 161
@@ -135,43 +133,77 @@ class ActionExecutor:
                 "gender": params["gender"],
                 "activity_level": params["activity_level"],
             },
-            "message": f"BMR: {bmr:.0f} kcal, TDEE: {tdee:.0f} kcal",
+            "message": f"计算完成：您的 BMR 为 {bmr:.0f} kcal，TDEE 为 {tdee:.0f} kcal",
         }
 
     def _action_record_food(self, params: dict[str, Any]) -> dict[str, Any]:
         """记录饮食。"""
-        from src.models import WeightRecord  # noqa: F401 - 确保模型已注册
+        from src.models import FoodLog, User
 
         food_name = params.get("food_name")
         calories = params.get("calories")
+        
         if not food_name:
             return {"success": False, "error": "缺少 food_name 参数"}
+        
+        if calories is None:
+            return {"success": False, "error": "缺少 calories 参数"}
 
-        # 使用简单的方式记录（在 notes 中存储饮食信息）
-        # 因为当前 SQLModel 中没有独立的 FoodLog 表，我们创建一个简单存储
-        meal_type = params.get("meal_type", "meal")
-        record_text = f"[饮食] {meal_type}: {food_name}"
-        if calories:
-            record_text += f" ({calories} kcal)"
+        with self._session_factory() as session:
+            # 尝试获取第一个用户进行记录（改进建议：应通过上下文获取当前用户）
+            user = session.exec(select(User)).first()
+            user_id = user.id if user else None
 
-        return {
-            "success": True,
-            "data": {
-                "food_name": food_name,
-                "calories": calories,
-                "meal_type": meal_type,
-                "recorded_at": datetime.now(timezone.utc).isoformat(),
-            },
-            "message": f"已记录饮食: {food_name}" + (f" ({calories} kcal)" if calories else ""),
-        }
+            log = FoodLog(
+                user_id=user_id,
+                food_name=food_name,
+                calories=float(calories),
+                timestamp=datetime.now(timezone.utc),
+            )
+            session.add(log)
+            session.commit()
+            session.refresh(log)
+
+            return {
+                "success": True,
+                "data": {
+                    "id": log.id,
+                    "food_name": log.food_name,
+                    "calories": log.calories,
+                    "recorded_at": log.timestamp.isoformat(),
+                },
+                "message": f"已成功记录：{log.food_name}，热量为 {log.calories} kcal",
+            }
 
     def _action_query_food_log(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询饮食记录。"""
-        return {
-            "success": True,
-            "data": [],
-            "message": "饮食记录功能正在开发中，暂无数据",
-        }
+        from src.models import FoodLog
+
+        limit = params.get("limit", 10)
+
+        with self._session_factory() as session:
+            stmt = (
+                select(FoodLog)
+                .order_by(FoodLog.timestamp.desc())
+                .limit(limit)
+            )
+            records = session.exec(stmt).all()
+
+            data = [
+                {
+                    "id": r.id,
+                    "food_name": r.food_name,
+                    "calories": r.calories,
+                    "recorded_at": r.timestamp.isoformat(),
+                }
+                for r in records
+            ]
+
+            return {
+                "success": True,
+                "data": data,
+                "message": f"为您查询到最近 {len(data)} 条饮食记录",
+            }
 
     def _action_search_food_nutrition(self, params: dict[str, Any]) -> dict[str, Any]:
         """搜索食物营养数据（通过 Milvus）。"""
@@ -183,7 +215,7 @@ class ActionExecutor:
             return {"success": False, "error": "食物检索服务不可用"}
 
         try:
-            results = self._food_search.search_by_text(query, limit=5)
+            results = self._food_search.search_by_text(query, limit=params.get("limit", 5))
             data = [
                 {
                     "description": r.description,
@@ -198,35 +230,13 @@ class ActionExecutor:
             return {
                 "success": True,
                 "data": data,
-                "message": f"找到 {len(data)} 种相关食物",
+                "message": f"搜索完成，为您找到 {len(data)} 种相关食物",
             }
         except Exception as e:
-            return {"success": False, "error": f"搜索失败: {e}"}
+            return {"success": False, "error": f"搜索过程出错: {e}"}
 
     def set_food_search(self, food_search) -> None:
         """注入食物检索服务。"""
         self._food_search = food_search
 
     _food_search = None
-
-
-def extract_action(text: str) -> Optional[tuple[str, dict[str, Any], str]]:
-    """从文本中提取 Action 指令。
-
-    返回: (action_name, params, clean_text) 或 None
-    """
-    pattern = r"```action\s*\n(.*?)\n\s*```"
-    match = re.search(pattern, text, re.DOTALL)
-    if not match:
-        return None
-
-    try:
-        action_json = json.loads(match.group(1).strip())
-        action_name = action_json.get("action", "")
-        params = action_json.get("params", {})
-        # 移除 action 块，保留前后文本
-        clean_text = text[: match.start()] + text[match.end() :]
-        return action_name, params, clean_text.strip()
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.warning("Action 指令解析失败: %s", e)
-        return None

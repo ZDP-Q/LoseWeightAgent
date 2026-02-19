@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
@@ -6,7 +7,7 @@ from typing import Any, Optional, Union
 
 from openai import AsyncOpenAI
 
-from .action_executor import ActionExecutor, extract_action
+from .action_executor import ActionExecutor
 from .database.db_manager import DBManager
 from src.models import FoodRecognition, Ingredient, User
 from .llm.factory import LLMFactory
@@ -23,6 +24,7 @@ from .services.food_search import FoodSearchService
 from .services.meal_planner import MealPlanner
 from .services.milvus_manager import MilvusManager
 from .services.tdee import TDEECalculator
+from .tools import TOOLS
 
 logger = logging.getLogger("loseweight.agent")
 
@@ -35,7 +37,7 @@ class LoseWeightAgent:
         database_url: str = "",
         provider: str = "qwen",
         model: str = "qwen3.5-plus",
-        stream: bool = False,
+        stream: bool = True,
         # Milvus + Embedding 配置
         milvus_host: str = "127.0.0.1",
         milvus_port: int = 19530,
@@ -98,100 +100,119 @@ class LoseWeightAgent:
                 self._action_executor.set_food_search(self.food_search)
 
     # ------------------------------------------------------------------
-    # 流式聊天（核心新功能）
+    # 流式聊天（支持 Tool Calling + RAG）
     # ------------------------------------------------------------------
 
     async def chat_stream(
         self, message: str, user_info: str = ""
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """流式聊天方法，返回 SSE 事件生成器。
-
-        Yields:
-            {"event": "text", "data": "文本chunk"}
-            {"event": "action_result", "data": {action结果}}
-            {"event": "done", "data": ""}
-        """
+        """流式聊天方法，支持工具调用和 RAG。"""
         system_prompt = self.prompt_manager.render(
             "chat_agent.j2", user_info=user_info
         )
 
-        stream = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": message},
-            ],
-            stream=True,
-        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message},
+        ]
 
-        full_content = ""
-        buffer = ""
-        in_action_block = False
+        logger.info(f"开始流式对话请求: model={self.model}")
+        
+        # 最大迭代次数，防止死循环
+        max_iterations = 5
+        iteration = 0
 
-        async for chunk in stream:
-            delta = chunk.choices[0].delta
-            if not delta.content:
-                continue
+        while iteration < max_iterations:
+            iteration += 1
+            
+            try:
+                stream = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    stream=True,
+                )
+            except Exception as e:
+                logger.error(f"LLM 请求失败: {e}")
+                yield {"event": "error", "data": str(e)}
+                return
 
-            text = delta.content
-            full_content += text
+            full_content = ""
+            tool_calls = []
+            
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                
+                delta = chunk.choices[0].delta
+                
+                # 处理文本内容
+                if delta.content:
+                    full_content += delta.content
+                    yield {"event": "text", "data": delta.content}
+                
+                # 处理工具调用
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        if len(tool_calls) <= tc_delta.index:
+                            tool_calls.append({
+                                "id": tc_delta.id,
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            })
+                        
+                        tc = tool_calls[tc_delta.index]
+                        if tc_delta.id:
+                            tc["id"] = tc_delta.id
+                        if tc_delta.function.name:
+                            tc["function"]["name"] += tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tc["function"]["arguments"] += tc_delta.function.arguments
 
-            # 检测 action 块的开始和结束
-            buffer += text
+            # 如果没有工具调用，结束循环
+            if not tool_calls:
+                break
 
-            if "```action" in buffer and not in_action_block:
-                # action 块开始，输出 action 前的文本
-                pre_action = buffer.split("```action")[0]
-                if pre_action.strip():
-                    yield {"event": "text", "data": pre_action}
-                buffer = "```action" + buffer.split("```action", 1)[1]
-                in_action_block = True
-                continue
+            # 将助手消息添加到历史记录
+            assistant_msg = {"role": "assistant", "content": full_content or None, "tool_calls": tool_calls}
+            messages.append(assistant_msg)
 
-            if in_action_block:
-                # 检查 action 块是否结束
-                if "```" in buffer.split("```action", 1)[-1].lstrip("\n"):
-                    # action 块结束，解析并执行
-                    action_result = self._process_action_block(buffer)
-                    if action_result:
-                        yield {"event": "action_result", "data": action_result}
-                    buffer = ""
-                    in_action_block = False
-                continue
+            # 执行工具调用
+            any_tool_executed = False
+            for tc in tool_calls:
+                action_name = tc["function"]["name"]
+                try:
+                    params = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    params = {}
+                
+                logger.info(f"执行工具: {action_name}, 参数: {params}")
+                
+                if self._action_executor:
+                    exec_result = self._action_executor.execute(action_name, params)
+                    exec_result["action"] = action_name
+                    
+                    # 发送 action_result 事件给前端
+                    yield {"event": "action_result", "data": exec_result}
+                    
+                    # 将工具执行结果添加回对话，供 RAG 使用
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "name": action_name,
+                        "content": json.dumps(exec_result, ensure_ascii=False)
+                    })
+                    any_tool_executed = True
+            
+            if not any_tool_executed:
+                break
+                
+            # 继续下一次迭代，让 LLM 根据工具结果生成回复（RAG）
+            logger.info("继续迭代以处理工具结果")
 
-            # 普通文本，每收到就输出
-            yield {"event": "text", "data": text}
-            buffer = ""
-
-        # 处理剩余 buffer
-        if buffer.strip():
-            if in_action_block:
-                action_result = self._process_action_block(buffer)
-                if action_result:
-                    yield {"event": "action_result", "data": action_result}
-            else:
-                yield {"event": "text", "data": buffer}
-
+        logger.info(f"流式对话结束，共迭代 {iteration} 次")
         yield {"event": "done", "data": ""}
-
-    def _process_action_block(self, text: str) -> Optional[dict[str, Any]]:
-        """处理 action 代码块。"""
-        result = extract_action(text)
-        if not result:
-            return None
-
-        action_name, params, _clean_text = result
-
-        if not self._action_executor:
-            return {
-                "action": action_name,
-                "success": False,
-                "error": "动作执行器未初始化",
-            }
-
-        exec_result = self._action_executor.execute(action_name, params)
-        exec_result["action"] = action_name
-        return exec_result
 
     # ------------------------------------------------------------------
     # 非流式聊天（向下兼容）
@@ -200,34 +221,51 @@ class LoseWeightAgent:
     async def get_guidance_direct(
         self, question: str, user_info: str = ""
     ) -> str:
-        """直接获取指导建议（非流式，由后端 API 调用）。"""
+        """直接获取指导建议（支持工具调用和 RAG）。"""
         system_prompt = self.prompt_manager.render(
             "chat_agent.j2", user_info=user_info
         )
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question},
-            ],
-        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ]
 
-        content = response.choices[0].message.content or ""
+        max_iterations = 5
+        iteration = 0
+        
+        while iteration < max_iterations:
+            iteration += 1
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+            )
 
-        # 检查是否有 action 需要执行
-        action = extract_action(content)
-        if action and self._action_executor:
-            action_name, params, clean_text = action
-            result = self._action_executor.execute(action_name, params)
-            # 将操作结果附加到回复中
-            if result.get("success"):
-                clean_text += f"\n\n✅ {result.get('message', '操作成功')}"
-            else:
-                clean_text += f"\n\n❌ {result.get('error', '操作失败')}"
-            return clean_text
+            msg = response.choices[0].message
+            if not msg.tool_calls:
+                return msg.content or ""
 
-        return content
+            # 处理工具调用
+            messages.append(msg)
+            for tc in msg.tool_calls:
+                action_name = tc.function.name
+                try:
+                    params = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    params = {}
+                
+                if self._action_executor:
+                    result = self._action_executor.execute(action_name, params)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": action_name,
+                        "content": json.dumps(result, ensure_ascii=False)
+                    })
+        
+        return "对话迭代次数过多，请稍后再试。"
 
     # ------------------------------------------------------------------
     # 用户管理
