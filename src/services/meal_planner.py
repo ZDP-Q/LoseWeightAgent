@@ -19,10 +19,8 @@ class MealPlanner:
         self.stream = stream
 
     async def plan_meals(
-        self, ingredients: List[str], tdee: float, goal: str = "lose_weight"
+        self, ingredients: List[str], target_calories: float, goal: str = "lose_weight"
     ) -> Union[DailyMealPlan, Dict[str, Any], None]:
-        target_calories = tdee - 500 if goal == "lose_weight" else tdee
-
         prompt = self.prompt_manager.render(
             "meal_planner.j2",
             ingredients=ingredients,
@@ -37,10 +35,7 @@ class MealPlanner:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            stream=self.stream,
+            stream=False,  # 规划食谱始终非流式，以便解析 JSON
         )
-
-        if self.stream:
-            return {"info": "Streaming mode enabled, response not parsed as JSON"}
 
         return parse_llm_json(response.choices[0].message.content, model=DailyMealPlan)

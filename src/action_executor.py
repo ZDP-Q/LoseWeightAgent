@@ -23,14 +23,19 @@ class ActionExecutor:
         """
         self._session_factory = session_factory
 
-    def execute(self, action_name: str, params: dict[str, Any]) -> dict[str, Any]:
-        """执行指定动作，返回结果。"""
+    async def execute(self, action_name: str, params: dict[str, Any]) -> dict[str, Any]:
+        """异步执行指定动作，返回结果。"""
         handler = getattr(self, f"_action_{action_name}", None)
         if not handler:
             return {"success": False, "error": f"不支持的动作: {action_name}"}
 
         try:
-            return handler(params)
+            # 兼容同步和异步处理函数
+            import inspect
+            if inspect.iscoroutinefunction(handler):
+                return await handler(params)
+            else:
+                return handler(params)
         except Exception as e:
             logger.error("动作执行失败 [%s]: %s", action_name, e)
             return {"success": False, "error": str(e)}
@@ -205,7 +210,7 @@ class ActionExecutor:
                 "message": f"为您查询到最近 {len(data)} 条饮食记录",
             }
 
-    def _action_search_food_nutrition(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _action_search_food_nutrition(self, params: dict[str, Any]) -> dict[str, Any]:
         """搜索食物营养数据（通过 Milvus）。"""
         query = params.get("query")
         if not query:
@@ -215,6 +220,7 @@ class ActionExecutor:
             return {"success": False, "error": "食物检索服务不可用"}
 
         try:
+            # Milvus 检索通常很快
             results = self._food_search.search_by_text(query, limit=params.get("limit", 5))
             data = [
                 {
@@ -235,8 +241,87 @@ class ActionExecutor:
         except Exception as e:
             return {"success": False, "error": f"搜索过程出错: {e}"}
 
+    async def _action_generate_meal_plan(self, params: dict[str, Any]) -> dict[str, Any]:
+        """生成详细食谱。"""
+        if not self._meal_planner:
+            return {"success": False, "error": "食谱规划服务不可用"}
+
+        ingredients = params.get("ingredients", [])
+        calorie_goal = params.get("calorie_goal", 1800)
+        preferences = params.get("preferences", "清淡")
+
+        try:
+            result = await self._meal_planner.plan_meals(
+                ingredients=ingredients,
+                target_calories=float(calorie_goal),
+                goal="lose_weight"
+            )
+            
+            if not result:
+                return {"success": False, "error": "食谱规划生成结果为空"}
+
+            return {
+                "success": True,
+                "data": result.model_dump(),
+                "message": f"已为您成功规划包含 {', '.join(ingredients)} 的 {preferences} 减脂食谱",
+            }
+        except Exception as e:
+            logger.error(f"食谱规划动作执行失败: {e}")
+            return {"success": False, "error": f"规划出错: {e}"}
+
+    def _action_query_user_profile(self, params: dict[str, Any]) -> dict[str, Any]:
+        """查询用户档案。"""
+        from src.models import User
+
+        with self._session_factory() as session:
+            user = session.exec(select(User)).first()
+            if not user:
+                return {"success": False, "error": "未找到用户信息，请先完善个人资料"}
+
+            return {
+                "success": True,
+                "data": {
+                    "name": user.name,
+                    "gender": user.gender,
+                    "age": user.age,
+                    "height_cm": user.height_cm,
+                    "weight_kg": user.initial_weight_kg, # 初始体重
+                    "target_weight_kg": user.target_weight_kg,
+                    "tdee": user.tdee,
+                    "suggested_calories": user.tdee - 500 if user.tdee else 1800,
+                },
+                "message": f"已获取用户 {user.name} 的健康档案",
+            }
+
+    def _action_query_user_ingredients(self, params: dict[str, Any]) -> dict[str, Any]:
+        """查询用户库存食材。"""
+        from src.models import Ingredient, User
+
+        with self._session_factory() as session:
+            user = session.exec(select(User)).first()
+            if not user:
+                return {"success": False, "error": "未找到用户信息"}
+
+            stmt = select(Ingredient).where(Ingredient.user_id == user.id)
+            items = session.exec(stmt).all()
+            
+            ingredient_list = [i.name for i in items]
+            
+            return {
+                "success": True,
+                "data": {
+                    "ingredients": ingredient_list
+                },
+                "message": f"用户当前拥有 {len(ingredient_list)} 种食材: {', '.join(ingredient_list)}" if ingredient_list else "用户当前没有记录库存食材",
+            }
+
     def set_food_search(self, food_search) -> None:
         """注入食物检索服务。"""
         self._food_search = food_search
 
+    def set_meal_planner(self, meal_planner) -> None:
+        """注入食谱规划服务。"""
+        self._meal_planner = meal_planner
+
     _food_search = None
+    _meal_planner = None

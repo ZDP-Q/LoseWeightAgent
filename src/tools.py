@@ -132,4 +132,52 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_meal_plan",
+            "description": "根据用户提供的食材列表生成一日三餐的详细减脂食谱计划",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ingredients": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "用户提供的食材列表，例如：['鸡胸肉', '西兰花']",
+                    },
+                    "calorie_goal": {
+                        "type": "number",
+                        "description": "每日目标总热量 (kcal)，不提供则默认参考 TDEE 或 1800",
+                    },
+                    "preferences": {
+                        "type": "string",
+                        "description": "口味偏好，如：清淡、辣、中式等",
+                    },
+                },
+                "required": ["ingredients"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_user_profile",
+            "description": "查询当前用户的健康档案，包括身高、体重、TDEE、目标热量、性别等基础信息",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_user_ingredients",
+            "description": "查询用户当前库存中拥有的食材列表",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]

@@ -20,6 +20,7 @@ class LLMFactory:
             return OpenAI(
                 api_key=LLMFactory._api_key,
                 base_url=LLMFactory._base_url,
+                timeout=120.0,
             )
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -29,5 +30,6 @@ class LLMFactory:
             return AsyncOpenAI(
                 api_key=LLMFactory._api_key,
                 base_url=LLMFactory._base_url,
+                timeout=120.0,
             )
         raise ValueError(f"Unsupported provider: {provider}")

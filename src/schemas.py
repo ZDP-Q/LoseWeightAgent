@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 
 class UserBase(BaseModel):
     username: str
@@ -23,9 +23,9 @@ class MealDetail(BaseModel):
 
 class DailySummary(BaseModel):
     target_calories: int
-    total_protein: Optional[str] = None
-    total_carbs: Optional[str] = None
-    total_fat: Optional[str] = None
+    total_protein: Optional[Union[str, int]] = None
+    total_carbs: Optional[Union[str, int]] = None
+    total_fat: Optional[Union[str, int]] = None
 
 class DailyMealPlan(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
