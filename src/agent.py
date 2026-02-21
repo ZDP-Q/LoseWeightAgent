@@ -321,15 +321,29 @@ class LoseWeightAgent:
                 if delta.content:
                     content_to_send = delta.content
                     
-                    # 增强型流式格式保障：
-                    # 检查当前 delta 是否包含标题起始符（#），且 full_content 末尾没有足够的换行
-                    # 我们检查 delta 的开头（忽略开头的空格）是否为 #
+                    # --- 增强型流式格式保障 (V3.0 "Perfect" Version) ---
+                    # 算法：结构化边界守护 (Structural Boundary Guarding)
+                    # 1. 标题防护：检测是否以 # 开头
                     stripped_delta = content_to_send.lstrip()
-                    if stripped_delta.startswith("#") and full_content:
-                        # 如果前面没有任何换行，补两个换行；如果只有一个换行，补一个换行
-                        if not full_content.endswith("\n"):
-                            content_to_send = "\n\n" + content_to_send
+                    if stripped_delta.startswith("#"):
+                        # 如果前面没有任何内容，或者是换行符，则需要确保有两个换行
+                        if not full_content:
+                            pass # 刚开始，不需要前导换行
                         elif not full_content.endswith("\n\n"):
+                            if full_content.endswith("\n"):
+                                content_to_send = "\n" + content_to_send
+                            else:
+                                content_to_send = "\n\n" + content_to_send
+
+                    # 2. 列表符号防护：检测是否以 -, *, + 开头且后面跟了空格或紧跟非符号字符
+                    elif re.match(r"^[\-\*\+]\s+", stripped_delta):
+                        if full_content and not full_content.endswith("\n"):
+                            content_to_send = "\n" + content_to_send
+                    
+                    # 3. 代码块防护：如果内容恰好是 ```，确保前后有换行
+                    if "```" in content_to_send:
+                        # 如果 ``` 在开头且 full_content 不以换行结尾
+                        if content_to_send.startswith("```") and full_content and not full_content.endswith("\n"):
                             content_to_send = "\n" + content_to_send
                     
                     full_content += content_to_send
