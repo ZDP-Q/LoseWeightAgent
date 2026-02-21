@@ -8,8 +8,9 @@ from typing import Any, Optional, Union
 from openai import AsyncOpenAI
 
 from .action_executor import ActionExecutor
-from .database.db_manager import DBManager
-from src.models import FoodRecognition, Ingredient, User
+from src.models import User
+from src.repositories.user_repository import UserRepository
+from src.repositories.food_recognition_repository import FoodRecognitionRepository
 from .llm.factory import LLMFactory
 from .prompt_manager import PromptManager
 from .schemas import (
@@ -56,13 +57,10 @@ class LoseWeightAgent:
         self.model = model
         self.stream = stream
         self.prompt_manager = PromptManager()
+        self._session_factory = session_factory
 
-        # 初始化数据库（仅在提供 database_url 时）
-        if database_url:
-            self.db = DBManager(database_url)
-            self.db.init_db()
-        else:
-            self.db = None
+        # 废弃直接的 DBManager，统一使用 session_factory + repositories
+        self.db = None
 
         self.meal_planner = MealPlanner(
             self.client, self.prompt_manager, model=self.model, stream=self.stream
@@ -355,37 +353,38 @@ class LoseWeightAgent:
         gender: str,
         activity_level: str,
     ) -> UserSchema:
-        if not self.db:
-            raise RuntimeError("数据库未配置")
-        session = self.db.get_session()
+        if not self._session_factory:
+            raise RuntimeError("Session factory 未配置")
+        
         tdee = TDEECalculator.calculate_tdee(
             weight, height, age, gender, activity_level
         )
 
-        # 使用 name 字段替代 username
-        user = session.query(User).filter_by(name=username).first()
-        if user:
-            user.initial_weight_kg = weight  # Mapping to backend model fields
-            user.height_cm = height
-            user.age = age
-            user.gender = gender
-            user.activity_level = activity_level
-            user.tdee = tdee
-        else:
-            user = User(
-                name=username,
-                initial_weight_kg=weight,
-                target_weight_kg=weight, # Default to current weight if not specified
-                height_cm=height,
-                age=age,
-                gender=gender,
-                activity_level=activity_level,
-                tdee=tdee,
-            )
-            session.add(user)
+        with self._session_factory() as session:
+            repo = UserRepository(session)
+            user = repo.get_user_by_name(username)
+            if user:
+                repo.update_user(user, {
+                    "initial_weight_kg": weight,
+                    "height_cm": height,
+                    "age": age,
+                    "gender": gender,
+                    "activity_level": activity_level,
+                    "tdee": tdee
+                })
+            else:
+                user = User(
+                    name=username,
+                    initial_weight_kg=weight,
+                    target_weight_kg=weight,
+                    height_cm=height,
+                    age=age,
+                    gender=gender,
+                    activity_level=activity_level,
+                    tdee=tdee,
+                )
+                repo.create_user(user)
 
-        session.commit()
-        session.close()
         return UserSchema(
             username=username,
             weight=weight,
@@ -397,41 +396,34 @@ class LoseWeightAgent:
         )
 
     def get_user_tdee(self, username: str) -> Optional[float]:
-        if not self.db:
+        if not self._session_factory:
             return None
-        session = self.db.get_session()
-        user = session.query(User).filter_by(name=username).first()
-        tdee = user.tdee if user else None
-        session.close()
-        return tdee
+        with self._session_factory() as session:
+            repo = UserRepository(session)
+            user = repo.get_user_by_name(username)
+            return user.tdee if user else None
 
     def add_ingredient(self, username: str, ingredient_name: str) -> bool:
-        if not self.db:
+        if not self._session_factory:
             return False
-        session = self.db.get_session()
-        user = session.query(User).filter_by(name=username).first()
-        if user:
-            ingredient = Ingredient(name=ingredient_name, user_id=user.id)
-            session.add(ingredient)
-            session.commit()
-            session.close()
-            return True
-        session.close()
+        with self._session_factory() as session:
+            repo = UserRepository(session)
+            user = repo.get_user_by_name(username)
+            if user:
+                repo.add_ingredient(user.id, ingredient_name)
+                return True
         return False
 
     def get_ingredients(self, username: str) -> list[str]:
-        if not self.db:
+        if not self._session_factory:
             return []
-        session = self.db.get_session()
-        user = session.query(User).filter_by(name=username).first()
-        ingredients = []
-        if user:
-            ingredients = [
-                i.name
-                for i in session.query(Ingredient).filter_by(user_id=user.id).all()
-            ]
-        session.close()
-        return ingredients
+        with self._session_factory() as session:
+            repo = UserRepository(session)
+            user = repo.get_user_by_name(username)
+            if user:
+                ingredients = repo.get_ingredients(user.id)
+                return [i.name for i in ingredients]
+        return []
 
     # ------------------------------------------------------------------
     # 餐食规划
@@ -492,25 +484,22 @@ class LoseWeightAgent:
             timestamp=datetime.now().isoformat(),
         )
 
-        if self.db:
+        if self._session_factory:
             try:
-                session = self.db.get_session()
-                user = (
-                    session.query(User).filter_by(name=username).first()
-                    if username
-                    else None
-                )
-                recognition_log = FoodRecognition(
-                    user_id=user.id if user else None,
-                    image_path=image_path,
-                    food_name=final_response.final_food_name,
-                    calories=final_response.final_estimated_calories,
-                    verification_status="已取平均值",
-                    reason=f"基于 {len(results)} 次独立并发识别结果计算平均值",
-                )
-                session.add(recognition_log)
-                session.commit()
-                session.close()
+                with self._session_factory() as session:
+                    user_repo = UserRepository(session)
+                    recognition_repo = FoodRecognitionRepository(session)
+                    
+                    user = user_repo.get_user_by_name(username) if username else None
+                    
+                    recognition_repo.create_recognition_log(
+                        user_id=user.id if user else None,
+                        image_path=image_path,
+                        food_name=final_response.final_food_name,
+                        calories=final_response.final_estimated_calories,
+                        verification_status="已取平均值",
+                        reason=f"基于 {len(results)} 次独立并发识别结果计算平均值",
+                    )
             except Exception as e:
                 logger.error("数据库存储失败: %s", e)
 
@@ -566,15 +555,15 @@ class LoseWeightAgent:
 
     async def get_guidance(self, username: str, question: str) -> str:
         user_info = ""
-        if self.db:
-            session = self.db.get_session()
-            user = session.query(User).filter_by(name=username).first()
-            if user:
-                user_info = (
-                    f"用户信息：体重{user.initial_weight_kg}kg, 身高{user.height_cm}cm, "
-                    f"年龄{user.age}, TDEE{user.tdee:.0f}kcal。"
-                )
-            session.close()
+        if self._session_factory:
+            with self._session_factory() as session:
+                repo = UserRepository(session)
+                user = repo.get_user_by_name(username)
+                if user:
+                    user_info = (
+                        f"用户信息：体重{user.initial_weight_kg}kg, 身高{user.height_cm}cm, "
+                        f"年龄{user.age}, TDEE{user.tdee:.0f}kcal。"
+                    )
 
         prompt = self.prompt_manager.render(
             "guidance.j2", user_info=user_info, question=question

@@ -41,6 +41,7 @@ class FoodAnalysisResult(BaseModel):
     calories: int = Field(..., alias="estimated_calories")
     confidence: float = Field(default=0.0)
     components: List[str] = Field(default_factory=list)
+    nutrients: Dict[str, Union[str, float, int]] = Field(default_factory=dict, description="营养成分，如 {'蛋白质': '10g'}")
 
 class FoodRecognitionResponse(BaseModel):
     final_food_name: str

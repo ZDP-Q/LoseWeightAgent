@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlmodel import select
+from src.models import WeightRecord, FoodLog
+from src.repositories.user_repository import UserRepository
+from src.repositories.weight_repository import WeightRepository
+from src.repositories.food_log_repository import FoodLogRepository
 
 logger = logging.getLogger("loseweight.agent.action")
 
@@ -22,6 +26,8 @@ class ActionExecutor:
             session_factory: 返回 SQLModel Session 的可调用对象
         """
         self._session_factory = session_factory
+        self._food_search = None
+        self._meal_planner = None
 
     async def execute(self, action_name: str, params: dict[str, Any]) -> dict[str, Any]:
         """异步执行指定动作，返回结果。"""
@@ -42,8 +48,6 @@ class ActionExecutor:
 
     def _action_record_weight(self, params: dict[str, Any]) -> dict[str, Any]:
         """记录体重。"""
-        from src.models import WeightRecord
-
         weight_kg = params.get("weight_kg")
         if weight_kg is None:
             return {"success": False, "error": "缺少 weight_kg 参数"}
@@ -51,14 +55,13 @@ class ActionExecutor:
         notes = params.get("notes", "")
 
         with self._session_factory() as session:
+            repo = WeightRepository(session)
             record = WeightRecord(
                 weight_kg=float(weight_kg),
                 recorded_at=datetime.now(timezone.utc),
                 notes=notes,
             )
-            session.add(record)
-            session.commit()
-            session.refresh(record)
+            record = repo.create_record(record)
 
             return {
                 "success": True,
@@ -73,17 +76,11 @@ class ActionExecutor:
 
     def _action_query_weight_history(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询体重历史。"""
-        from src.models import WeightRecord
-
         limit = params.get("limit", 10)
 
         with self._session_factory() as session:
-            stmt = (
-                select(WeightRecord)
-                .order_by(WeightRecord.recorded_at.desc())
-                .limit(limit)
-            )
-            records = session.exec(stmt).all()
+            repo = WeightRepository(session)
+            records = repo.get_records(limit=limit)
 
             data = [
                 {
@@ -143,8 +140,6 @@ class ActionExecutor:
 
     def _action_record_food(self, params: dict[str, Any]) -> dict[str, Any]:
         """记录饮食。"""
-        from src.models import FoodLog, User
-
         food_name = params.get("food_name")
         calories = params.get("calories")
         
@@ -155,19 +150,17 @@ class ActionExecutor:
             return {"success": False, "error": "缺少 calories 参数"}
 
         with self._session_factory() as session:
-            # 尝试获取第一个用户进行记录（改进建议：应通过上下文获取当前用户）
-            user = session.exec(select(User)).first()
+            user_repo = UserRepository(session)
+            food_log_repo = FoodLogRepository(session)
+            
+            user = user_repo.get_first_user()
             user_id = user.id if user else None
 
-            log = FoodLog(
+            log = food_log_repo.create_log(
                 user_id=user_id,
                 food_name=food_name,
-                calories=float(calories),
-                timestamp=datetime.now(timezone.utc),
+                calories=float(calories)
             )
-            session.add(log)
-            session.commit()
-            session.refresh(log)
 
             return {
                 "success": True,
@@ -182,8 +175,6 @@ class ActionExecutor:
 
     def _action_query_food_log(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询饮食记录。"""
-        from src.models import FoodLog
-
         limit = params.get("limit", 10)
 
         with self._session_factory() as session:
@@ -220,7 +211,6 @@ class ActionExecutor:
             return {"success": False, "error": "食物检索服务不可用"}
 
         try:
-            # Milvus 检索通常很快
             results = self._food_search.search_by_text(query, limit=params.get("limit", 5))
             data = [
                 {
@@ -271,10 +261,9 @@ class ActionExecutor:
 
     def _action_query_user_profile(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询用户档案。"""
-        from src.models import User
-
         with self._session_factory() as session:
-            user = session.exec(select(User)).first()
+            user_repo = UserRepository(session)
+            user = user_repo.get_first_user()
             if not user:
                 return {"success": False, "error": "未找到用户信息，请先完善个人资料"}
 
@@ -285,7 +274,7 @@ class ActionExecutor:
                     "gender": user.gender,
                     "age": user.age,
                     "height_cm": user.height_cm,
-                    "weight_kg": user.initial_weight_kg, # 初始体重
+                    "weight_kg": user.initial_weight_kg,
                     "target_weight_kg": user.target_weight_kg,
                     "tdee": user.tdee,
                     "suggested_calories": user.tdee - 500 if user.tdee else 1800,
@@ -295,16 +284,13 @@ class ActionExecutor:
 
     def _action_query_user_ingredients(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询用户库存食材。"""
-        from src.models import Ingredient, User
-
         with self._session_factory() as session:
-            user = session.exec(select(User)).first()
+            user_repo = UserRepository(session)
+            user = user_repo.get_first_user()
             if not user:
                 return {"success": False, "error": "未找到用户信息"}
 
-            stmt = select(Ingredient).where(Ingredient.user_id == user.id)
-            items = session.exec(stmt).all()
-            
+            items = user_repo.get_ingredients(user.id)
             ingredient_list = [i.name for i in items]
             
             return {
@@ -322,6 +308,3 @@ class ActionExecutor:
     def set_meal_planner(self, meal_planner) -> None:
         """注入食谱规划服务。"""
         self._meal_planner = meal_planner
-
-    _food_search = None
-    _meal_planner = None
