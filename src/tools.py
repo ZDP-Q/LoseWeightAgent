@@ -1,4 +1,3 @@
-
 TOOLS = [
     {
         "type": "function",
@@ -121,7 +120,10 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索关键词，例如：鸡蛋、鸡胸肉"},
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词，例如：鸡蛋、鸡胸肉",
+                    },
                     "limit": {
                         "type": "integer",
                         "description": "返回结果的最大数量，默认为 5",

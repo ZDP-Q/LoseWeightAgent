@@ -4,11 +4,8 @@
 """
 
 import logging
-from datetime import datetime, timezone
 from typing import Any
 
-from sqlmodel import select
-from src.models import WeightRecord, FoodLog
 from src.repositories.user_repository import UserRepository
 from src.repositories.weight_repository import WeightRepository
 from src.repositories.food_log_repository import FoodLogRepository
@@ -29,39 +26,56 @@ class ActionExecutor:
         self._food_search = None
         self._meal_planner = None
 
-    async def execute(self, action_name: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def execute(
+        self, action_name: str, params: dict[str, Any], user_id: int | None = None
+    ) -> dict[str, Any]:
         """异步执行指定动作，返回结果。"""
         handler = getattr(self, f"_action_{action_name}", None)
         if not handler:
             return {"success": False, "error": f"不支持的动作: {action_name}"}
 
+        # 注入 user_id 到参数中，方便 handler 使用
+        if user_id:
+            params["_user_id"] = user_id
+
         try:
             # 兼容同步和异步处理函数
             import inspect
+
             if inspect.iscoroutinefunction(handler):
                 return await handler(params)
             else:
                 return handler(params)
         except Exception as e:
-            logger.error("动作执行失败 [%s]: %s", action_name, e)
+            logger.error(
+                "动作执行失败 [%s] (User: %s): %s",
+                action_name,
+                user_id,
+                e,
+                exc_info=True,
+            )
             return {"success": False, "error": str(e)}
 
     def _action_record_weight(self, params: dict[str, Any]) -> dict[str, Any]:
         """记录体重。"""
         weight_kg = params.get("weight_kg")
+        user_id = params.get("_user_id")
+
         if weight_kg is None:
             return {"success": False, "error": "缺少 weight_kg 参数"}
+        if not user_id:
+            return {"success": False, "error": "未提供用户标识"}
 
         notes = params.get("notes", "")
 
         with self._session_factory() as session:
             repo = WeightRepository(session)
-            record = WeightRecord(
-                weight_kg=float(weight_kg),
-                recorded_at=datetime.now(timezone.utc),
+            # 使用正确的仓库方法 add_weight
+            record = repo.add_weight(
+                weight=float(weight_kg),
+                user_id=user_id,
                 notes=notes,
             )
-            record = repo.create_record(record)
 
             return {
                 "success": True,
@@ -77,10 +91,15 @@ class ActionExecutor:
     def _action_query_weight_history(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询体重历史。"""
         limit = params.get("limit", 10)
+        user_id = params.get("_user_id")
+
+        if not user_id:
+            return {"success": False, "error": "未提供用户标识"}
 
         with self._session_factory() as session:
             repo = WeightRepository(session)
-            records = repo.get_records(limit=limit)
+            # 使用正确的仓库方法 get_weights
+            records = repo.get_weights(user_id=user_id, limit=limit)
 
             data = [
                 {
@@ -142,24 +161,19 @@ class ActionExecutor:
         """记录饮食。"""
         food_name = params.get("food_name")
         calories = params.get("calories")
-        
+        user_id = params.get("_user_id")
+
         if not food_name:
             return {"success": False, "error": "缺少 food_name 参数"}
-        
         if calories is None:
             return {"success": False, "error": "缺少 calories 参数"}
+        if not user_id:
+            return {"success": False, "error": "未提供用户标识"}
 
         with self._session_factory() as session:
-            user_repo = UserRepository(session)
             food_log_repo = FoodLogRepository(session)
-            
-            user = user_repo.get_first_user()
-            user_id = user.id if user else None
-
             log = food_log_repo.create_log(
-                user_id=user_id,
-                food_name=food_name,
-                calories=float(calories)
+                user_id=user_id, food_name=food_name, calories=float(calories)
             )
 
             return {
@@ -176,14 +190,14 @@ class ActionExecutor:
     def _action_query_food_log(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询饮食记录。"""
         limit = params.get("limit", 10)
+        user_id = params.get("_user_id")
+
+        if not user_id:
+            return {"success": False, "error": "未提供用户标识"}
 
         with self._session_factory() as session:
-            stmt = (
-                select(FoodLog)
-                .order_by(FoodLog.timestamp.desc())
-                .limit(limit)
-            )
-            records = session.exec(stmt).all()
+            repo = FoodLogRepository(session)
+            records = repo.get_logs(user_id=user_id, limit=limit)
 
             data = [
                 {
@@ -201,7 +215,9 @@ class ActionExecutor:
                 "message": f"为您查询到最近 {len(data)} 条饮食记录",
             }
 
-    async def _action_search_food_nutrition(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _action_search_food_nutrition(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
         """搜索食物营养数据（通过 Milvus）。"""
         query = params.get("query")
         if not query:
@@ -211,7 +227,9 @@ class ActionExecutor:
             return {"success": False, "error": "食物检索服务不可用"}
 
         try:
-            results = self._food_search.search_by_text(query, limit=params.get("limit", 5))
+            results = self._food_search.search_by_text(
+                query, limit=params.get("limit", 5)
+            )
             data = [
                 {
                     "description": r.description,
@@ -231,7 +249,9 @@ class ActionExecutor:
         except Exception as e:
             return {"success": False, "error": f"搜索过程出错: {e}"}
 
-    async def _action_generate_meal_plan(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _action_generate_meal_plan(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
         """生成详细食谱。"""
         if not self._meal_planner:
             return {"success": False, "error": "食谱规划服务不可用"}
@@ -244,9 +264,9 @@ class ActionExecutor:
             result = await self._meal_planner.plan_meals(
                 ingredients=ingredients,
                 target_calories=float(calorie_goal),
-                goal="lose_weight"
+                goal="lose_weight",
             )
-            
+
             if not result:
                 return {"success": False, "error": "食谱规划生成结果为空"}
 
@@ -261,44 +281,60 @@ class ActionExecutor:
 
     def _action_query_user_profile(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询用户档案。"""
+        user_id = params.get("_user_id")
+        if not user_id:
+            return {"success": False, "error": "未提供用户标识"}
+
         with self._session_factory() as session:
             user_repo = UserRepository(session)
-            user = user_repo.get_first_user()
+            weight_repo = WeightRepository(session)
+            
+            user = user_repo.get_user_by_id(user_id)
             if not user:
                 return {"success": False, "error": "未找到用户信息，请先完善个人资料"}
+
+            # 获取显示名称
+            display_name = user.full_name or user.username
+            
+            # 获取最新体重
+            latest_weight = user.initial_weight_kg
+            records = weight_repo.get_weights(user_id=user_id, limit=1)
+            if records:
+                latest_weight = records[0].weight_kg
 
             return {
                 "success": True,
                 "data": {
-                    "name": user.name,
+                    "name": display_name,
                     "gender": user.gender,
                     "age": user.age,
                     "height_cm": user.height_cm,
-                    "weight_kg": user.initial_weight_kg,
+                    "initial_weight_kg": user.initial_weight_kg,
+                    "current_weight_kg": latest_weight,
                     "target_weight_kg": user.target_weight_kg,
                     "tdee": user.tdee,
                     "suggested_calories": user.tdee - 500 if user.tdee else 1800,
                 },
-                "message": f"已获取用户 {user.name} 的健康档案",
+                "message": f"已获取用户 {display_name} 的健康档案",
             }
 
     def _action_query_user_ingredients(self, params: dict[str, Any]) -> dict[str, Any]:
         """查询用户库存食材。"""
+        user_id = params.get("_user_id")
+        if not user_id:
+            return {"success": False, "error": "未提供用户标识"}
+
         with self._session_factory() as session:
             user_repo = UserRepository(session)
-            user = user_repo.get_first_user()
-            if not user:
-                return {"success": False, "error": "未找到用户信息"}
-
-            items = user_repo.get_ingredients(user.id)
+            items = user_repo.get_ingredients(user_id)
             ingredient_list = [i.name for i in items]
-            
+
             return {
                 "success": True,
-                "data": {
-                    "ingredients": ingredient_list
-                },
-                "message": f"用户当前拥有 {len(ingredient_list)} 种食材: {', '.join(ingredient_list)}" if ingredient_list else "用户当前没有记录库存食材",
+                "data": {"ingredients": ingredient_list},
+                "message": f"用户当前拥有 {len(ingredient_list)} 种食材: {', '.join(ingredient_list)}"
+                if ingredient_list
+                else "用户当前没有记录库存食材",
             }
 
     def set_food_search(self, food_search) -> None:

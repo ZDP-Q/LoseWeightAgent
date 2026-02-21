@@ -36,7 +36,7 @@ class MilvusManager:
         self.collection_name = collection_name
         self.vector_dim = vector_dim
         uri = f"http://{host}:{port}"
-        
+
         # 尝试连接并增加重试逻辑，解决 "Proxy not ready" 问题
         last_exception = None
         for i in range(max_retries):
@@ -51,7 +51,10 @@ class MilvusManager:
                 if i < max_retries - 1:
                     logger.warning(
                         "Milvus (attempt %d/%d) 未就绪: %s. %d秒后重试...",
-                        i + 1, max_retries, e, retry_interval
+                        i + 1,
+                        max_retries,
+                        e,
+                        retry_interval,
                     )
                     time.sleep(retry_interval)
                 else:
@@ -71,31 +74,40 @@ class MilvusManager:
         # 定义 Schema
         fields = [
             FieldSchema(
-                name="fdc_id", dtype=DataType.INT64,
-                is_primary=True, auto_id=False,
+                name="fdc_id",
+                dtype=DataType.INT64,
+                is_primary=True,
+                auto_id=False,
             ),
             FieldSchema(
-                name="description", dtype=DataType.VARCHAR,
+                name="description",
+                dtype=DataType.VARCHAR,
                 max_length=512,
             ),
             FieldSchema(
-                name="food_category", dtype=DataType.VARCHAR,
+                name="food_category",
+                dtype=DataType.VARCHAR,
                 max_length=256,
             ),
             FieldSchema(
-                name="calories_per_100g", dtype=DataType.FLOAT,
+                name="calories_per_100g",
+                dtype=DataType.FLOAT,
             ),
             FieldSchema(
-                name="protein_per_100g", dtype=DataType.FLOAT,
+                name="protein_per_100g",
+                dtype=DataType.FLOAT,
             ),
             FieldSchema(
-                name="fat_per_100g", dtype=DataType.FLOAT,
+                name="fat_per_100g",
+                dtype=DataType.FLOAT,
             ),
             FieldSchema(
-                name="carbs_per_100g", dtype=DataType.FLOAT,
+                name="carbs_per_100g",
+                dtype=DataType.FLOAT,
             ),
             FieldSchema(
-                name="embedding", dtype=DataType.FLOAT_VECTOR,
+                name="embedding",
+                dtype=DataType.FLOAT_VECTOR,
                 dim=self.vector_dim,
             ),
         ]
@@ -149,9 +161,13 @@ class MilvusManager:
         """向量相似度搜索。"""
         if output_fields is None:
             output_fields = [
-                "fdc_id", "description", "food_category",
-                "calories_per_100g", "protein_per_100g",
-                "fat_per_100g", "carbs_per_100g",
+                "fdc_id",
+                "description",
+                "food_category",
+                "calories_per_100g",
+                "protein_per_100g",
+                "fat_per_100g",
+                "carbs_per_100g",
             ]
 
         # 确保集合已加载

@@ -66,8 +66,11 @@ class EmbeddingService:
             contents = [{"text": t} for t in batch]
             embeddings = self._call_api(contents)
             all_embeddings.extend(embeddings)
-            logger.debug("向量化批次 %d/%d 完成", i // batch_size + 1,
-                         (len(texts) + batch_size - 1) // batch_size)
+            logger.debug(
+                "向量化批次 %d/%d 完成",
+                i // batch_size + 1,
+                (len(texts) + batch_size - 1) // batch_size,
+            )
 
         return all_embeddings
 

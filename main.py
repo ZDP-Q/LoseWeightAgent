@@ -2,6 +2,7 @@ import asyncio
 from src.agent import LoseWeightAgent
 from src.schemas import DailyMealPlan, FoodRecognitionResponse
 
+
 async def main():
     # 初始化异步 Agent
     agent = LoseWeightAgent()
@@ -14,7 +15,7 @@ async def main():
         height=180.0,
         age=25,
         gender="male",
-        activity_level="sedentary"
+        activity_level="sedentary",
     )
     print(f"用户注册成功: {user_info.username}, TDEE: {user_info.tdee:.2f}")
 
@@ -43,7 +44,9 @@ async def main():
     if isinstance(food_result, FoodRecognitionResponse):
         print(f"最终识别结果: {food_result.final_food_name}")
         print(f"最终平均卡路里: {food_result.final_estimated_calories} kcal")
-        print(f"单次识别详情 (首例): {food_result.raw_data[0].food_name} ({food_result.raw_data[0].calories} kcal)")
+        print(
+            f"单次识别详情 (首例): {food_result.raw_data[0].food_name} ({food_result.raw_data[0].calories} kcal)"
+        )
     else:
         print(f"识别失败: {food_result}")
 
@@ -51,6 +54,7 @@ async def main():
     print("\n[5. 减重指导]")
     advice = await agent.get_guidance("小明", "如果我晚上加班太饿了，可以吃什么宵夜？")
     print(f"教练建议:\n{advice}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

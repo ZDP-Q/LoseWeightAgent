@@ -31,11 +31,11 @@ class FoodAnalyzer:
         try:
             img = Image.open(io.BytesIO(image_bytes))
             orig_size = len(image_bytes)
-            
+
             # 如果是 RGBA 模式，转换为 RGB
-            if img.mode == 'RGBA':
-                img = img.convert('RGB')
-                
+            if img.mode == "RGBA":
+                img = img.convert("RGB")
+
             width, height = img.size
             if width > max_size or height > max_size:
                 if width > height:
@@ -44,16 +44,20 @@ class FoodAnalyzer:
                 else:
                     new_height = max_size
                     new_width = int(width * (max_size / height))
-                
+
                 img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                
+
                 output = io.BytesIO()
                 img.save(output, format="JPEG", quality=85)
                 resized_bytes = output.getvalue()
-                logger.info(f"图片已压缩: {orig_size/1024:.1f}KB -> {len(resized_bytes)/1024:.1f}KB (尺寸: {width}x{height} -> {new_width}x{new_height})")
+                logger.info(
+                    f"图片已压缩: {orig_size / 1024:.1f}KB -> {len(resized_bytes) / 1024:.1f}KB (尺寸: {width}x{height} -> {new_width}x{new_height})"
+                )
                 return resized_bytes
-            
-            logger.info(f"图片无需压缩: {orig_size/1024:.1f}KB (尺寸: {width}x{height})")
+
+            logger.info(
+                f"图片无需压缩: {orig_size / 1024:.1f}KB (尺寸: {width}x{height})"
+            )
             return image_bytes
         except Exception as e:
             logger.warning(f"图片处理失败，使用原始数据: {e}")
@@ -65,7 +69,7 @@ class FoodAnalyzer:
         """从文件路径读取图片并识别食物。"""
         with open(image_path, "rb") as image_file:
             image_bytes = image_file.read()
-            
+
         resized_bytes = self._resize_image(image_bytes)
         base64_image = base64.b64encode(resized_bytes).decode("utf-8")
 
@@ -109,7 +113,7 @@ class FoodAnalyzer:
 
             content = response.choices[0].message.content
             logger.debug(f"LLM 原始回复内容: {content}")
-            
+
             if not content or not content.strip():
                 logger.warning("LLM 返回空内容，食物识别失败")
                 return None
