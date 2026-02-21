@@ -47,6 +47,10 @@ class LoseWeightAgent:
         provider: str = "qwen",
         model: str = "qwen3.5-plus",
         stream: bool = True,
+        # 视觉专用配置 (对接 Gemini Vision via Ark)
+        vision_api_key: Optional[str] = None,
+        vision_base_url: str = "https://ark.cn-beijing.volces.com/api/v3",
+        vision_model: str = "gemini-1.5-flash",
         # Milvus + Embedding 配置
         milvus_host: str = "127.0.0.1",
         milvus_port: int = 19530,
@@ -57,9 +61,20 @@ class LoseWeightAgent:
         session_factory=None,
     ):
         # 注入 LLM 配置
-        LLMFactory.configure(api_key=api_key, base_url=base_url)
+        self.client_chat: AsyncOpenAI = LLMFactory.create_async_client(api_key=api_key, base_url=base_url)
+        
+        # 视觉分析专用客户端：如果没传 vision_api_key，默认回退到 chat 客户端
+        if vision_api_key:
+            self.client_vision: AsyncOpenAI = LLMFactory.create_async_client(
+                api_key=vision_api_key, base_url=vision_base_url
+            )
+            self.vision_model = vision_model
+        else:
+            self.client_vision = self.client_chat
+            self.vision_model = model
 
-        self.client: AsyncOpenAI = LLMFactory.create_async_client(provider)
+        # 兼容旧代码引用 self.client
+        self.client = self.client_chat
         self.model = model
         self.stream = stream
         self.prompt_manager = PromptManager()
@@ -69,13 +84,13 @@ class LoseWeightAgent:
         self.db = None
 
         self.meal_planner = MealPlanner(
-            self.client, self.prompt_manager, model=self.model, stream=self.stream
+            self.client_chat, self.prompt_manager, model=self.model, stream=self.stream
         )
         self.food_analyzer = FoodAnalyzer(
-            self.client,
+            self.client_vision,
             self.prompt_manager,
-            model=self.model,
-            stream=self.stream,
+            model=self.vision_model,
+            stream=False, # 视觉始终非流式
         )
 
         # 初始化食物检索服务
