@@ -48,17 +48,25 @@ class MilvusManager:
                 return
             except Exception as e:
                 last_exception = e
+                # 提取精简的错误信息
+                error_msg = str(e)
+                if "Milvus Proxy is not ready yet" in error_msg:
+                    short_error = "Milvus Proxy 正在启动中..."
+                else:
+                    # 尝试只保留第一行或比较短的描述
+                    short_error = error_msg.split('\n')[0][:100]
+
                 if i < max_retries - 1:
                     logger.warning(
-                        "Milvus (attempt %d/%d) 未就绪: %s. %d秒后重试...",
+                        "Milvus 连接 (第 %d/%d 次重试): %s. %d 秒后再次尝试...",
                         i + 1,
                         max_retries,
-                        e,
+                        short_error,
                         retry_interval,
                     )
                     time.sleep(retry_interval)
                 else:
-                    logger.error("Milvus 连接失败，已达到最大重试次数: %s", uri)
+                    logger.error("Milvus 连接失败，已达到最大重试次数: %s (错误: %s)", uri, short_error)
                     raise last_exception
 
     def create_collection(self, drop_if_exists: bool = False) -> None:

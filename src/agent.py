@@ -405,8 +405,16 @@ class LoseWeightAgent:
                 except json.JSONDecodeError:
                     params = {}
 
+                # 记录日志时截断长字符串参数（如 base64）
+                log_params = {}
+                for k, v in params.items():
+                    if isinstance(v, str) and len(v) > 100:
+                        log_params[k] = v[:100] + "...(truncated)"
+                    else:
+                        log_params[k] = v
+
                 logger.info(
-                    f"执行工具: {action_name} (User: {user_id}), 参数: {params}"
+                    f"执行工具: {action_name} (User: {user_id}), 参数: {log_params}"
                 )
 
                 if self._action_executor:

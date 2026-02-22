@@ -112,7 +112,7 @@ class FoodAnalyzer:
             )
 
             content = response.choices[0].message.content
-            logger.debug(f"LLM 原始回复内容: {content}")
+            logger.debug(f"LLM 原始回复内容:\n{content}")
 
             if not content or not content.strip():
                 logger.warning("LLM 返回空内容，食物识别失败")

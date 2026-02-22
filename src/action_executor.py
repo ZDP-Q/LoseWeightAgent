@@ -30,8 +30,19 @@ class ActionExecutor:
         self, action_name: str, params: dict[str, Any], user_id: int | None = None
     ) -> dict[str, Any]:
         """异步执行指定动作，返回结果。"""
+        # 记录执行日志（对参数进行截断处理，防止 Base64 刷屏）
+        clean_params = {}
+        for k, v in params.items():
+            if isinstance(v, str) and len(v) > 100:
+                clean_params[k] = v[:100] + "...(truncated)"
+            else:
+                clean_params[k] = v
+        
+        logger.info("▶ 执行 AI 工具 [%s] (User: %s): %s", action_name, user_id, clean_params)
+
         handler = getattr(self, f"_action_{action_name}", None)
         if not handler:
+            logger.warning("未知工具动作: %s", action_name)
             return {"success": False, "error": f"不支持的动作: {action_name}"}
 
         # 注入 user_id 到参数中，方便 handler 使用
@@ -43,12 +54,20 @@ class ActionExecutor:
             import inspect
 
             if inspect.iscoroutinefunction(handler):
-                return await handler(params)
+                result = await handler(params)
             else:
-                return handler(params)
+                result = handler(params)
+
+            # 记录成功日志
+            if result.get("success"):
+                logger.info("✅ 工具执行成功 [%s]", action_name)
+            else:
+                logger.warning("❌ 工具执行失败 [%s]: %s", action_name, result.get("error"))
+
+            return result
         except Exception as e:
             logger.error(
-                "动作执行失败 [%s] (User: %s): %s",
+                "💥 动作执行发生异常 [%s] (User: %s): %s",
                 action_name,
                 user_id,
                 e,
